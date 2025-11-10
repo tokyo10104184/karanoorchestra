@@ -27,7 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let micAudioContext, analyser, microphone, scoreAnimationId;
     let synthAudioContext, synthGain;
     let pseudoCurrentTime = 0;
-    let timeUpdateInterval;
+    let animationFrameId;
 
     const NOTE_FREQUENCIES = {
         'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23,
@@ -56,7 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (micAudioContext) micAudioContext.close();
         if (synthAudioContext) synthAudioContext.close();
         cancelAnimationFrame(scoreAnimationId);
-        clearInterval(timeUpdateInterval);
+        cancelAnimationFrame(animationFrameId);
     }
 
     // --- 曲の読み込みと表示 ---
@@ -156,16 +156,21 @@ document.addEventListener('DOMContentLoaded', () => {
         oscillator.start();
         oscillator.stop(audioCurrentTime); // 全ての音符が終わったら停止
 
-        // 歌詞同期のための擬似的な時間更新
+        // 歌詞同期のための擬似的な時間更新 (requestAnimationFrameを使用)
         const totalDuration = pseudoPlayTime;
         const startTime = Date.now();
-        timeUpdateInterval = setInterval(() => {
+
+        function animationLoop() {
             pseudoCurrentTime = (Date.now() - startTime) / 1000;
             updateLyrics(pseudoCurrentTime);
-            if (pseudoCurrentTime >= totalDuration) {
+
+            if (pseudoCurrentTime < totalDuration) {
+                animationFrameId = requestAnimationFrame(animationLoop);
+            } else {
                 finishKaraoke();
             }
-        }, 100);
+        }
+        animationLoop();
     }
 
     // --- マイクと採点処理 ---
