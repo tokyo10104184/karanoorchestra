@@ -7,9 +7,38 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <h1>カラオケアプリ</h1>
-    <div id="lyrics-container"></div>
-    <audio id="audio-player" controls></audio>
+
+    <div id="song-selection-view">
+        <h1>曲を選んでください</h1>
+        <ul id="song-list"></ul>
+        <div id="add-song-form">
+            <h2>新しい曲を追加</h2>
+            <p>MP3音声ファイルと、タイムスタンプ付きのJSON歌詞ファイルを選択してください。</p>
+            <input type="file" id="audio-file-input" accept=".mp3">
+            <input type="file" id="lyrics-file-input" accept=".json">
+            <button id="add-song-button">曲を追加</button>
+        </div>
+    </div>
+
+    <div id="karaoke-view" class="hidden">
+        <div id="start-overlay">
+            <button id="start-singing-button">歌い始める（マイク使用）</button>
+        </div>
+        <button id="back-button">← 曲選択に戻る</button>
+        <h1 id="song-title"></h1>
+        <div id="lyrics-container"></div>
+        <div id="scoring-display">
+            <p>Score: <span id="current-score">0</span></p>
+        </div>
+        <audio id="audio-player" controls></audio>
+        <div id="final-score-view" class="hidden">
+            <h2>結果</h2>
+            <p>あなたのスコアは...</p>
+            <p id="final-score">0</p>
+            <button id="retry-button">もう一回歌う</button>
+        </div>
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>

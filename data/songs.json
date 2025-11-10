@@ -1,0 +1,16 @@
+[
+    {
+        "id": "song1",
+        "title": "サンプルソング",
+        "artist": "AIシンガー",
+        "audio": "data/song1.mp3",
+        "lyrics": "data/song1_lyrics.json"
+    },
+    {
+        "id": "song2",
+        "title": "きらきら星",
+        "artist": "フランス民謡",
+        "audio": "data/song2.mp3",
+        "lyrics": "data/song2_lyrics.json"
+    }
+]
