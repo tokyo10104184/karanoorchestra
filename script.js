@@ -24,8 +24,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let songs = [];
     let currentSong = null;
     let score = 0;
-    let audioContext, analyser, microphone, scoreAnimationId;
-    const SINGING_THRESHOLD = -50; // 歌っていると判定する音量のしきい値(dB)
+    let micAudioContext, analyser, microphone, scoreAnimationId;
+    let synthAudioContext, synthGain;
+    let pseudoCurrentTime = 0;
+    let timeUpdateInterval;
+
+    const NOTE_FREQUENCIES = {
+        'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23,
+        'G4': 392.00, 'A4': 440.00, 'B4': 493.88,
+    };
 
     // --- ビューの切り替え ---
     function showKaraokeView() {
@@ -39,11 +46,17 @@ document.addEventListener('DOMContentLoaded', () => {
     function showSongSelectionView() {
         karaokeView.classList.add('hidden');
         songSelectionView.classList.remove('hidden');
-        if (microphone) microphone.disconnect();
-        if (audioContext) audioContext.close();
-        cancelAnimationFrame(scoreAnimationId);
+        stopAllAudio();
         audioPlayer.pause();
         audioPlayer.currentTime = 0;
+    }
+
+    function stopAllAudio() {
+        if (microphone) microphone.disconnect();
+        if (micAudioContext) micAudioContext.close();
+        if (synthAudioContext) synthAudioContext.close();
+        cancelAnimationFrame(scoreAnimationId);
+        clearInterval(timeUpdateInterval);
     }
 
     // --- 曲の読み込みと表示 ---
@@ -54,7 +67,6 @@ document.addEventListener('DOMContentLoaded', () => {
             displaySongList();
         } catch (error) {
             console.error('Error loading songs:', error);
-            songList.innerHTML = '<li>曲の読み込みに失敗しました。</li>';
         }
     }
 
@@ -72,19 +84,25 @@ document.addEventListener('DOMContentLoaded', () => {
     async function prepareKaraoke(song) {
         currentSong = song;
         songTitle.textContent = `${song.title} - ${song.artist}`;
-        audioPlayer.src = song.audio;
 
         try {
-            let lyricsData;
-            if (song.isLocal) {
-                lyricsData = song.lyrics;
+            let lyricsDataPath = song.isLocal ? null : song.lyrics_path;
+            if(song.isLocal){
+                 lyrics = song.lyrics.lyrics;
             } else {
-                const response = await fetch(song.lyrics);
-                lyricsData = await response.json();
+                 const response = await fetch(lyricsDataPath);
+                 const data = await response.json();
+                 lyrics = data.lyrics;
             }
 
-            lyrics = lyricsData.lyrics;
             resetKaraokeState();
+
+            if (song.type === 'webaudio') {
+                audioPlayer.classList.add('hidden');
+            } else {
+                audioPlayer.src = song.audio;
+                audioPlayer.classList.remove('hidden');
+            }
             showKaraokeView();
 
         } catch (error) {
@@ -98,20 +116,54 @@ document.addEventListener('DOMContentLoaded', () => {
         lyricsContainer.textContent = lyrics.length > 0 ? lyrics[0][1] : '歌詞がありません';
         score = 0;
         currentScoreSpan.textContent = score;
+        pseudoCurrentTime = 0;
+    }
+
+    // --- Web Audio メロディ再生 ---
+    function playMelody(song) {
+        synthAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = synthAudioContext.createOscillator();
+        synthGain = synthAudioContext.createGain();
+        oscillator.connect(synthGain);
+        synthGain.connect(synthAudioContext.destination);
+
+        const noteDuration = 60 / song.tempo;
+        let currentTime = 0;
+
+        song.melody.forEach(([note, length]) => {
+            const duration = noteDuration * (16 / length);
+            if (NOTE_FREQUENCIES[note]) {
+                oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], currentTime);
+                synthGain.gain.setValueAtTime(0.1, currentTime);
+                synthGain.gain.setValueAtTime(0, currentTime + duration * 0.9);
+            }
+            currentTime += duration;
+        });
+
+        oscillator.start();
+
+        // 歌詞同期のための擬似的な時間更新
+        const totalDuration = currentTime;
+        const startTime = Date.now();
+        timeUpdateInterval = setInterval(() => {
+            pseudoCurrentTime = (Date.now() - startTime) / 1000;
+            updateLyrics(pseudoCurrentTime);
+            if (pseudoCurrentTime >= totalDuration) {
+                finishKaraoke();
+            }
+        }, 100);
     }
 
     // --- マイクと採点処理 ---
     async function initMicrophone() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            analyser = audioContext.createAnalyser();
-            microphone = audioContext.createMediaStreamSource(stream);
+            micAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = micAudioContext.createAnalyser();
+            microphone = micAudioContext.createMediaStreamSource(stream);
             microphone.connect(analyser);
-            analyser.fftSize = 256;
             return true;
         } catch (err) {
-            console.error('マイクへのアクセスが拒否されました:', err);
             alert('マイクへのアクセスを許可してください。');
             return false;
         }
@@ -119,28 +171,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startScoring() {
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
         function updateScore() {
             analyser.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for(const amplitude of dataArray) {
-                sum += amplitude * amplitude;
-            }
-            const volume = Math.sqrt(sum / dataArray.length);
+            const volume = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
 
-            // 簡易的な音量判定
-            const currentTime = audioPlayer.currentTime;
+            const time = currentSong.type === 'webaudio' ? pseudoCurrentTime : audioPlayer.currentTime;
             const currentLyric = lyrics[currentLyricIndex];
             const nextLyric = lyrics[currentLyricIndex + 1];
 
-            if (currentLyric && currentTime >= currentLyric[0] && (!nextLyric || currentTime < nextLyric[0])) {
-                 // 歌うべき区間で声が出ているか
-                if (volume > 20) { // このしきい値は調整が必要
+            if (currentLyric && time >= currentLyric[0] && (!nextLyric || time < nextLyric[0])) {
+                if (volume > 30) {
                     score += 1;
                     currentScoreSpan.textContent = score;
                 }
             }
-
             scoreAnimationId = requestAnimationFrame(updateScore);
         }
         updateScore();
@@ -148,31 +192,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- カラオケの開始と終了 ---
     async function startSinging() {
-        const micReady = await initMicrophone();
-        if (micReady) {
-            startOverlay.classList.add('hidden');
-            scoringDisplay.classList.remove('hidden');
+        startOverlay.classList.add('hidden');
+        scoringDisplay.classList.remove('hidden');
+
+        if (currentSong.type === 'webaudio') {
+            playMelody(currentSong);
+        } else {
             audioPlayer.play();
-            startScoring();
         }
+
+        const micReady = await initMicrophone();
+        if (micReady) startScoring();
     }
 
     function finishKaraoke() {
-        cancelAnimationFrame(scoreAnimationId);
+        stopAllAudio();
         finalScoreSpan.textContent = score;
         finalScoreView.classList.remove('hidden');
     }
 
     // --- 歌詞の同期 ---
-    function updateLyrics() {
-        const currentTime = audioPlayer.currentTime;
-        if (lyrics.length === 0) return;
+    function updateLyrics(timeOverride) {
+        const currentTime = timeOverride !== undefined ? timeOverride : audioPlayer.currentTime;
+        if (!lyrics || lyrics.length === 0) return;
 
         if (currentLyricIndex < lyrics.length - 1 && currentTime >= lyrics[currentLyricIndex + 1][0]) {
             currentLyricIndex++;
             lyricsContainer.textContent = lyrics[currentLyricIndex][1];
         }
-
         while (currentLyricIndex > 0 && currentTime < lyrics[currentLyricIndex][0]) {
             currentLyricIndex--;
             lyricsContainer.textContent = lyrics[currentLyricIndex][1];
@@ -181,41 +228,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 曲の追加 ---
     async function addNewSong() {
-        // (省略：前ステップで実装済みのため変更なし)
         const audioFile = audioFileInput.files[0];
         const lyricsFile = lyricsFileInput.files[0];
-
-        if (!audioFile || !lyricsFile) {
-            alert('音声ファイルと歌詞ファイルの両方を選択してください。');
-            return;
-        }
+        if (!audioFile || !lyricsFile) return;
 
         try {
             const lyricsText = await lyricsFile.text();
             const lyricsData = JSON.parse(lyricsText);
-
             const newSong = {
                 id: `local-song-${Date.now()}`,
                 title: lyricsData.songTitle || '無題の曲',
                 artist: lyricsData.artist || '不明なアーティスト',
                 audio: URL.createObjectURL(audioFile),
                 lyrics: lyricsData,
-                isLocal: true
+                isLocal: true,
+                type: 'file'
             };
-
             songs.push(newSong);
             displaySongList();
-            audioFileInput.value = '';
-            lyricsFileInput.value = '';
-
         } catch (error) {
-            console.error('Error adding new song:', error);
             alert('曲の追加中にエラーが発生しました。');
         }
     }
 
     // --- イベントリスナー ---
-    audioPlayer.addEventListener('timeupdate', updateLyrics);
+    audioPlayer.addEventListener('timeupdate', () => updateLyrics());
     audioPlayer.addEventListener('ended', finishKaraoke);
     backButton.addEventListener('click', showSongSelectionView);
     addSongButton.addEventListener('click', addNewSong);
@@ -224,7 +261,9 @@ document.addEventListener('DOMContentLoaded', () => {
         finalScoreView.classList.add('hidden');
         resetKaraokeState();
         startOverlay.classList.remove('hidden');
-        audioPlayer.currentTime = 0;
+        if (currentSong.type !== 'webaudio') {
+            audioPlayer.currentTime = 0;
+        }
     });
 
     // --- 初期化 ---
