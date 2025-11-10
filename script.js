@@ -124,26 +124,40 @@ document.addEventListener('DOMContentLoaded', () => {
         synthAudioContext = new (window.AudioContext || window.webkitAudioContext)();
         const oscillator = synthAudioContext.createOscillator();
         synthGain = synthAudioContext.createGain();
+
+        oscillator.type = 'sine'; // 波形をサイン波に変更して柔らかい音色に
         oscillator.connect(synthGain);
         synthGain.connect(synthAudioContext.destination);
 
-        const noteDuration = 60 / song.tempo;
-        let currentTime = 0;
+        const beatDuration = 60 / song.tempo;
+        let audioCurrentTime = synthAudioContext.currentTime;
+        let pseudoPlayTime = 0;
 
         song.melody.forEach(([note, length]) => {
-            const duration = noteDuration * (16 / length);
+            const duration = beatDuration * (4 / length); // 4分音符を基準にする
             if (NOTE_FREQUENCIES[note]) {
-                oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], currentTime);
-                synthGain.gain.setValueAtTime(0.1, currentTime);
-                synthGain.gain.setValueAtTime(0, currentTime + duration * 0.9);
+                const attackTime = 0.01;
+                const releaseTime = 0.1;
+                const peakVolume = 0.2;
+
+                synthGain.gain.setValueAtTime(0, audioCurrentTime);
+                // Attack: 短い時間で音量を上げる
+                synthGain.gain.linearRampToValueAtTime(peakVolume, audioCurrentTime + attackTime);
+                oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], audioCurrentTime);
+
+                // Release: 音が終わる少し前から音量を下げ始める
+                synthGain.gain.setValueAtTime(peakVolume, audioCurrentTime + duration - releaseTime);
+                synthGain.gain.linearRampToValueAtTime(0, audioCurrentTime + duration);
             }
-            currentTime += duration;
+            audioCurrentTime += duration;
+            pseudoPlayTime += duration;
         });
 
         oscillator.start();
+        oscillator.stop(audioCurrentTime); // 全ての音符が終わったら停止
 
         // 歌詞同期のための擬似的な時間更新
-        const totalDuration = currentTime;
+        const totalDuration = pseudoPlayTime;
         const startTime = Date.now();
         timeUpdateInterval = setInterval(() => {
             pseudoCurrentTime = (Date.now() - startTime) / 1000;
