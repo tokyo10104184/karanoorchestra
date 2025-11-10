@@ -25,8 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentSong = null;
     let score = 0;
     let micAudioContext, analyser, microphone, scoreAnimationId;
-    let synthAudioContext, synthGain;
-    let pseudoCurrentTime = 0;
+    let synthAudioContext, synthGain, audioStartTime;
     let animationFrameId;
 
     const NOTE_FREQUENCIES = {
@@ -54,7 +53,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function stopAllAudio() {
         if (microphone) microphone.disconnect();
         if (micAudioContext) micAudioContext.close();
-        if (synthAudioContext) synthAudioContext.close();
+        if (synthAudioContext) {
+            synthAudioContext.close().catch(e => console.error(e));
+            synthAudioContext = null;
+        }
         cancelAnimationFrame(scoreAnimationId);
         cancelAnimationFrame(animationFrameId);
     }
@@ -116,55 +118,51 @@ document.addEventListener('DOMContentLoaded', () => {
         lyricsContainer.textContent = lyrics.length > 0 ? lyrics[0][1] : '歌詞がありません';
         score = 0;
         currentScoreSpan.textContent = score;
-        pseudoCurrentTime = 0;
     }
 
     // --- Web Audio メロディ再生 ---
     function playMelody(song) {
+        stopAllAudio();
         synthAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioStartTime = synthAudioContext.currentTime;
+
         const oscillator = synthAudioContext.createOscillator();
         synthGain = synthAudioContext.createGain();
-
-        oscillator.type = 'sine'; // 波形をサイン波に変更して柔らかい音色に
+        oscillator.type = 'sine';
         oscillator.connect(synthGain);
         synthGain.connect(synthAudioContext.destination);
 
         const beatDuration = 60 / song.tempo;
-        let audioCurrentTime = synthAudioContext.currentTime;
-        let pseudoPlayTime = 0;
+        let scheduledTime = 0;
 
         song.melody.forEach(([note, length]) => {
-            const duration = beatDuration * (4 / length); // 4分音符を基準にする
+            const duration = beatDuration * (4 / length);
             if (NOTE_FREQUENCIES[note]) {
+                const noteStartTime = audioStartTime + scheduledTime;
                 const attackTime = 0.01;
                 const releaseTime = 0.1;
                 const peakVolume = 0.2;
 
-                synthGain.gain.setValueAtTime(0, audioCurrentTime);
-                // Attack: 短い時間で音量を上げる
-                synthGain.gain.linearRampToValueAtTime(peakVolume, audioCurrentTime + attackTime);
-                oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], audioCurrentTime);
-
-                // Release: 音が終わる少し前から音量を下げ始める
-                synthGain.gain.setValueAtTime(peakVolume, audioCurrentTime + duration - releaseTime);
-                synthGain.gain.linearRampToValueAtTime(0, audioCurrentTime + duration);
+                synthGain.gain.setValueAtTime(0, noteStartTime);
+                synthGain.gain.linearRampToValueAtTime(peakVolume, noteStartTime + attackTime);
+                oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], noteStartTime);
+                synthGain.gain.setValueAtTime(peakVolume, noteStartTime + duration - releaseTime);
+                synthGain.gain.linearRampToValueAtTime(0, noteStartTime + duration);
             }
-            audioCurrentTime += duration;
-            pseudoPlayTime += duration;
+            scheduledTime += duration;
         });
 
-        oscillator.start();
-        oscillator.stop(audioCurrentTime); // 全ての音符が終わったら停止
+        oscillator.start(audioStartTime);
+        oscillator.stop(audioStartTime + scheduledTime);
 
-        // 歌詞同期のための擬似的な時間更新 (requestAnimationFrameを使用)
-        const totalDuration = pseudoPlayTime;
-        const startTime = Date.now();
+        const totalDuration = scheduledTime;
 
         function animationLoop() {
-            pseudoCurrentTime = (Date.now() - startTime) / 1000;
-            updateLyrics(pseudoCurrentTime);
+            if (!synthAudioContext) return;
+            const elapsedTime = synthAudioContext.currentTime - audioStartTime;
+            updateLyrics(elapsedTime);
 
-            if (pseudoCurrentTime < totalDuration) {
+            if (elapsedTime < totalDuration) {
                 animationFrameId = requestAnimationFrame(animationLoop);
             } else {
                 finishKaraoke();
@@ -191,10 +189,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function startScoring() {
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         function updateScore() {
+            if (!analyser) return;
             analyser.getByteFrequencyData(dataArray);
             const volume = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
 
-            const time = currentSong.type === 'webaudio' ? pseudoCurrentTime : audioPlayer.currentTime;
+            const time = currentSong.type === 'webaudio'
+                ? synthAudioContext.currentTime - audioStartTime
+                : audioPlayer.currentTime;
+
             const currentLyric = lyrics[currentLyricIndex];
             const nextLyric = lyrics[currentLyricIndex + 1];
 
@@ -231,16 +233,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- 歌詞の同期 ---
-    function updateLyrics(timeOverride) {
-        const currentTime = timeOverride !== undefined ? timeOverride : audioPlayer.currentTime;
+    function updateLyrics(currentTime) {
         if (!lyrics || lyrics.length === 0) return;
 
-        if (currentLyricIndex < lyrics.length - 1 && currentTime >= lyrics[currentLyricIndex + 1][0]) {
-            currentLyricIndex++;
-            lyricsContainer.textContent = lyrics[currentLyricIndex][1];
+        let newLyricIndex = -1;
+        for (let i = lyrics.length - 1; i >= 0; i--) {
+            if (currentTime >= lyrics[i][0]) {
+                newLyricIndex = i;
+                break;
+            }
         }
-        while (currentLyricIndex > 0 && currentTime < lyrics[currentLyricIndex][0]) {
-            currentLyricIndex--;
+
+        if (newLyricIndex !== -1 && newLyricIndex !== currentLyricIndex) {
+            currentLyricIndex = newLyricIndex;
             lyricsContainer.textContent = lyrics[currentLyricIndex][1];
         }
     }
@@ -271,7 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- イベントリスナー ---
-    audioPlayer.addEventListener('timeupdate', () => updateLyrics());
+    audioPlayer.addEventListener('timeupdate', () => updateLyrics(audioPlayer.currentTime));
     audioPlayer.addEventListener('ended', finishKaraoke);
     backButton.addEventListener('click', showSongSelectionView);
     addSongButton.addEventListener('click', addNewSong);
